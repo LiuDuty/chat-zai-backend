@@ -1,6 +1,6 @@
 # ============================================================
 #  SISTEMA DE CONVERSA INTELIGENTE (Z.ai + FastAPI)
-#  Contexto incremental (sem busca de histórico)
+#  Contexto incremental + Ping Render Free
 # ============================================================
 
 from fastapi import FastAPI
@@ -8,23 +8,28 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import sqlite3, os, requests
 from dotenv import load_dotenv
+import asyncio
+import random
+import httpx
 
 # ------------------------------------------------------------
-# 1️⃣  Configurações
+# 1️⃣ Configurações
 # ------------------------------------------------------------
 load_dotenv()
 API_KEY = os.getenv("ZAI_API_KEY")
 API_URL = "https://api.z.ai/api/paas/v4/chat/completions"
 DB_FILE = "conversas.db"
-
+RENDER_URL = os.getenv("RENDER_URL")  # URL pública do backend Render
 
 SYSTEM_PROMPT = (
     "Você é o KISS AZ-900, um assistente de estudos do exame Microsoft Azure Fundamentals (AZ-900). "
     "Responda de forma didática e mantenha coerência com o contexto da conversa."
 )
 
+FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:4200")
+
 # ------------------------------------------------------------
-# 2️⃣  Banco de dados
+# 2️⃣ Banco de dados
 # ------------------------------------------------------------
 def init_db():
     conn = sqlite3.connect(DB_FILE)
@@ -47,11 +52,11 @@ def salvar_mensagem(session_id, role, content, tipo):
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
 
-    if tipo == 2:  # contexto (mantém 1 por sessão)
+    if tipo == 2:
         c.execute("DELETE FROM conversas WHERE session_id=? AND tipo_mensagem=2", (session_id,))
         c.execute("INSERT INTO conversas (session_id, role, content, tipo_mensagem) VALUES (?, ?, ?, 2)",
                   (session_id, "system", content))
-    else:  # histórico (apenas registro)
+    else:
         c.execute("INSERT INTO conversas (session_id, role, content, tipo_mensagem) VALUES (?, ?, ?, 9)",
                   (session_id, role, content))
 
@@ -67,25 +72,20 @@ def buscar_contexto(session_id):
     return r[0] if r else ""
 
 # ------------------------------------------------------------
-# 3️⃣  Função principal (sem busca de histórico)
+# 3️⃣ Função principal
 # ------------------------------------------------------------
 def atualizar_e_gerar_resposta(session_id: str, nova_mensagem: str):
     headers = {"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json"}
 
-    # Salva pergunta (tipo 9)
     salvar_mensagem(session_id, "user", nova_mensagem, 9)
-
-    # Busca contexto existente
     contexto = buscar_contexto(session_id)
 
-    # Prepara prompt de resposta com contexto atual
     prompt = [
         {"role": "system", "content": SYSTEM_PROMPT},
         {"role": "system", "content": f"Contexto até agora:\n{contexto}"},
         {"role": "user", "content": nova_mensagem},
     ]
 
-    # Gera resposta
     resp = requests.post(API_URL, json={"model": "glm-4.5-flash", "messages": prompt}, headers=headers)
     if resp.status_code != 200:
         return f"Erro na resposta: {resp.text}"
@@ -93,25 +93,18 @@ def atualizar_e_gerar_resposta(session_id: str, nova_mensagem: str):
     resposta = resp.json()["choices"][0]["message"]["content"].strip()
     salvar_mensagem(session_id, "assistant", resposta, 9)
 
-    # Atualiza contexto (incrementalmente)
-    novo_contexto = (
-        f"{contexto}\nUsuário: {nova_mensagem}\nAssistente: {resposta}"
-    ).strip()
-
-    # Opcional: limitar tamanho do contexto para não crescer demais
+    novo_contexto = (f"{contexto}\nUsuário: {nova_mensagem}\nAssistente: {resposta}").strip()
     if len(novo_contexto) > 4000:
-        novo_contexto = novo_contexto[-4000:]  # mantém o mais recente
-
+        novo_contexto = novo_contexto[-4000:]
     salvar_mensagem(session_id, "system", novo_contexto, 2)
 
     return resposta
 
 # ------------------------------------------------------------
-# 4️⃣  API FastAPI
+# 4️⃣ FastAPI
 # ------------------------------------------------------------
 app = FastAPI(title="Z.ai Conversa Inteligente (Contexto Incremental)")
 
-FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:4200")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[FRONTEND_URL],
@@ -124,7 +117,7 @@ class Mensagem(BaseModel):
     texto: str
     session_id: str
 
-@app.get("/")
+@app.get("/", methods=["GET", "HEAD"])
 def home():
     return {"status": "API Z.ai ativa e mantendo contexto incremental."}
 
@@ -140,3 +133,26 @@ def get_contexto(session_id: str):
 @app.options("/mensagem")
 async def options_mensagem():
     return {"message": "CORS OK"}
+
+# ------------------------------------------------------------
+# 5️⃣ Ping aleatório para Render Free
+# ------------------------------------------------------------
+async def ping_randomico():
+    if not RENDER_URL:
+        print("RENDER_URL não definido. Ping desativado.")
+        return
+
+    async with httpx.AsyncClient() as client:
+        while True:
+            try:
+                response = await client.get(RENDER_URL)
+                print(f"Ping enviado! Status: {response.status_code}")
+            except Exception as e:
+                print(f"Erro ao pingar: {e}")
+
+            intervalo = random.randint(300, 600)  # 5 a 10 minutos
+            await asyncio.sleep(intervalo)
+
+@app.on_event("startup")
+async def startup_event():
+    asyncio.create_task(ping_randomico())
