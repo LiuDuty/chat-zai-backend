@@ -1,6 +1,6 @@
 import sqlite3
 
-db_name = "/data/conversas.db"
+db_name = "conversas.db"
 
 def reset_db(path):
     conn = sqlite3.connect(path)

@@ -15,7 +15,7 @@ from dotenv import load_dotenv
 load_dotenv()
 API_KEY = os.getenv("ZAI_API_KEY")
 API_URL = "https://api.z.ai/api/paas/v4/chat/completions"
-DB_FILE = "/data/conversas.db"
+DB_FILE = "conversas.db"
 
 
 SYSTEM_PROMPT = (
