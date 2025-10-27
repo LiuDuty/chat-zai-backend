@@ -112,17 +112,17 @@ class Mensagem(BaseModel):
     texto: str
     session_id: str
 
-@app.get("/", methods=["GET", "HEAD"])
-def home():
+@app.get("/")  # ✅ Corrigido: GET + HEAD suportados automaticamente
+async def home():
     return {"status": "API Z.ai ativa e mantendo contexto incremental."}
 
 @app.post("/mensagem")
-def receber_mensagem(mensagem: Mensagem):
+async def receber_mensagem(mensagem: Mensagem):
     resposta = atualizar_e_gerar_resposta(mensagem.session_id, mensagem.texto)
     return {"resposta": resposta}
 
 @app.get("/contexto/{session_id}")
-def get_contexto(session_id: str):
+async def get_contexto(session_id: str):
     return {"contexto": buscar_contexto(session_id)}
 
 @app.options("/mensagem")
