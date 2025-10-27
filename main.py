@@ -26,7 +26,10 @@ SYSTEM_PROMPT = (
     "Responda de forma didática e mantenha coerência com o contexto da conversa."
 )
 
-FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:4200")
+FRONTEND_URLS = [
+    "https://chat-zai-frontend.vercel.app",
+    "http://localhost:4200"
+]
 
 # ------------------------------------------------------------
 # 2️⃣ Banco de dados
@@ -107,7 +110,7 @@ app = FastAPI(title="Z.ai Conversa Inteligente (Contexto Incremental)")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[FRONTEND_URL],
+    allow_origins=FRONTEND_URLS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
