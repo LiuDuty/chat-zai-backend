@@ -54,7 +54,6 @@ init_db()
 def salvar_mensagem(session_id, role, content, tipo):
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
-
     if tipo == 2:
         c.execute("DELETE FROM conversas WHERE session_id=? AND tipo_mensagem=2", (session_id,))
         c.execute("INSERT INTO conversas (session_id, role, content, tipo_mensagem) VALUES (?, ?, ?, 2)",
@@ -62,7 +61,6 @@ def salvar_mensagem(session_id, role, content, tipo):
     else:
         c.execute("INSERT INTO conversas (session_id, role, content, tipo_mensagem) VALUES (?, ?, ?, 9)",
                   (session_id, role, content))
-
     conn.commit()
     conn.close()
 
@@ -79,28 +77,22 @@ def buscar_contexto(session_id):
 # ------------------------------------------------------------
 def atualizar_e_gerar_resposta(session_id: str, nova_mensagem: str):
     headers = {"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json"}
-
     salvar_mensagem(session_id, "user", nova_mensagem, 9)
     contexto = buscar_contexto(session_id)
-
     prompt = [
         {"role": "system", "content": SYSTEM_PROMPT},
         {"role": "system", "content": f"Contexto até agora:\n{contexto}"},
         {"role": "user", "content": nova_mensagem},
     ]
-
     resp = requests.post(API_URL, json={"model": "glm-4.5-flash", "messages": prompt}, headers=headers)
     if resp.status_code != 200:
         return f"Erro na resposta: {resp.text}"
-
     resposta = resp.json()["choices"][0]["message"]["content"].strip()
     salvar_mensagem(session_id, "assistant", resposta, 9)
-
     novo_contexto = (f"{contexto}\nUsuário: {nova_mensagem}\nAssistente: {resposta}").strip()
     if len(novo_contexto) > 4000:
         novo_contexto = novo_contexto[-4000:]
     salvar_mensagem(session_id, "system", novo_contexto, 2)
-
     return resposta
 
 # ------------------------------------------------------------
@@ -144,17 +136,13 @@ async def ping_randomico():
     if not RENDER_URL:
         print("RENDER_URL não definido. Ping desativado.")
         return
-
     async with httpx.AsyncClient() as client:
         while True:
             try:
-                response = await client.get(RENDER_URL)
-                print(f"Ping enviado! Status: {response.status_code}")
-            except Exception as e:
-                print(f"Erro ao pingar: {e}")
-
-            intervalo = random.randint(300, 600)  # 5 a 10 minutos
-            await asyncio.sleep(intervalo)
+                await client.get(RENDER_URL)
+            except:
+                pass
+            await asyncio.sleep(random.randint(300, 600))  # 5 a 10 minutos
 
 @app.on_event("startup")
 async def startup_event():
