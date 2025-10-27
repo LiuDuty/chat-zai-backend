@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: zai-backend
+    env: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port 10000
+    envVars:
+      - key: ZAI_API_KEY
+        sync: false
+      - key: FRONTEND_URL
+        value: "https://chat-zai-frontend.vercel.app/"
