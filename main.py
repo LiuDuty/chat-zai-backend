@@ -11,6 +11,7 @@ from dotenv import load_dotenv
 import asyncio
 import random
 import httpx
+import os
 
 # ------------------------------------------------------------
 # 1️⃣ Configurações
@@ -20,16 +21,14 @@ API_KEY = os.getenv("ZAI_API_KEY")
 API_URL = "https://api.z.ai/api/paas/v4/chat/completions"
 DB_FILE = "conversas.db"
 RENDER_URL = os.getenv("RENDER_URL")  # URL pública do backend Render
+FRONTEND_URL = os.getenv("FRONTEND_URL") # <-- ALTERAÇÃO AQUI
 
 SYSTEM_PROMPT = (
     "Você é o KISS AZ-900, um assistente de estudos do exame Microsoft Azure Fundamentals (AZ-900). "
     "Responda de forma didática e mantenha coerência com o contexto da conversa."
 )
 
-FRONTEND_URLS = [
-    "https://chat-zai-frontend.vercel.app",
-    "http://localhost:4200"
-]
+# A lista fixa FRONTEND_URLS foi removida.
 
 # ------------------------------------------------------------
 # 2️⃣ Banco de dados
@@ -102,7 +101,10 @@ app = FastAPI(title="Z.ai Conversa Inteligente (Contexto Incremental)")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=FRONTEND_URLS,
+    allow_origins=[ # <-- ALTERAÇÃO AQUI
+        FRONTEND_URL,
+        "http://localhost:4200"
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -112,7 +114,7 @@ class Mensagem(BaseModel):
     texto: str
     session_id: str
 
-@app.get("/")  # ✅ Corrigido: GET + HEAD suportados automaticamente
+@app.get("/")
 async def home():
     return {"status": "API Z.ai ativa e mantendo contexto incremental."}
 
