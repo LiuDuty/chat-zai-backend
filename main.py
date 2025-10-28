@@ -122,13 +122,17 @@ async def atualizar_e_gerar_resposta(session_id: str, nova_mensagem: str):
 # 4️⃣ FastAPI
 # ------------------------------------------------------------
 app = FastAPI(title="Z.ai Conversa Inteligente (Contexto Incremental + Timeout)")
+origins = [
+    "http://127.0.0.1:4200",              # desenvolvimento local
+    "http://localhost:4200",
+    "https://chat-zai-frontend.vercel.app",  # frontend hospedado no Vercel
+]
+
+app = FastAPI(title="Z.ai Conversa Inteligente (Contexto Incremental + Timeout)")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        FRONTEND_URL,
-        "http://localhost:4200",
-    ],
+    allow_origins=origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
