@@ -144,9 +144,17 @@ async def home():
     return {"status": "✅ API Z.ai ativa e mantendo contexto incremental."}
 
 
+
 @app.post("/mensagem")
-async def receber_mensagem(mensagem: Mensagem):
-    resposta = await atualizar_e_gerar_resposta(mensagem.session_id, mensagem.texto)
+async def mensagem(request: Request):
+    data = await request.json()
+    texto = data.get("texto", "")
+    session_id = data.get("session_id", "sessao")
+
+    if not texto:
+        return {"resposta": "Por favor, envie uma mensagem válida."}
+
+    resposta = f"Você disse: {texto}"
     return {"resposta": resposta}
 
 
