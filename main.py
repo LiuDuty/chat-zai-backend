@@ -115,7 +115,7 @@ async def atualizar_e_gerar_resposta(session_id: str, nova_mensagem: str):
         return resposta
 
     except Exception as e:
-        return f"💥 Erro interno no backend: {str(e)}"
+        return f"💥 Erro interno backend: {str(e)}"
 
 
 # ------------------------------------------------------------
