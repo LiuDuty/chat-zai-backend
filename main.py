@@ -1,6 +1,7 @@
 # ============================================================
-#  SISTEMA DE CONVERSA INTELIGENTE (Z.ai + FastAPI)
-#  Contexto incremental + Timeout estendido + Ping Render Free
+# SISTEMA DE CONVERSA INTELIGENTE (Z.ai + FastAPI)
+# Contexto incremental + Timeout estendido + Ping Render Free
+# CORS corrigido para chat-zai-frontend.vercel.app
 # ============================================================
 
 from fastapi import FastAPI, Request
@@ -17,7 +18,6 @@ API_KEY = os.getenv("ZAI_API_KEY")
 API_URL = "https://api.z.ai/api/paas/v4/chat/completions"
 DB_FILE = "conversas.db"
 RENDER_URL = os.getenv("RENDER_URL")
-FRONTEND_URL = os.getenv("FRONTEND_URL")
 
 SYSTEM_PROMPT = (
     "Você é o KISS AZ-900, um assistente de estudos do exame Microsoft Azure Fundamentals (AZ-900). "
@@ -48,7 +48,6 @@ init_db()
 def salvar_mensagem(session_id, role, content, tipo):
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
-
     if tipo == 2:
         c.execute("DELETE FROM conversas WHERE session_id=? AND tipo_mensagem=2", (session_id,))
         c.execute(
@@ -60,7 +59,6 @@ def salvar_mensagem(session_id, role, content, tipo):
             "INSERT INTO conversas (session_id, role, content, tipo_mensagem) VALUES (?, ?, ?, 9)",
             (session_id, role, content),
         )
-
     conn.commit()
     conn.close()
 
@@ -72,7 +70,6 @@ def buscar_contexto(session_id):
     r = c.fetchone()
     conn.close()
     return r[0] if r else ""
-
 
 # ------------------------------------------------------------
 # 3️⃣ Função principal (assíncrona com timeout)
@@ -89,8 +86,6 @@ async def atualizar_e_gerar_resposta(session_id: str, nova_mensagem: str):
         ]
 
         headers = {"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json"}
-
-        # Timeout aumentado (2 minutos)
         timeout_config = httpx.Timeout(120.0)
 
         async with httpx.AsyncClient(timeout=timeout_config) as client:
@@ -110,25 +105,22 @@ async def atualizar_e_gerar_resposta(session_id: str, nova_mensagem: str):
         novo_contexto = f"{contexto}\nUsuário: {nova_mensagem}\nAssistente: {resposta}".strip()
         if len(novo_contexto) > 4000:
             novo_contexto = novo_contexto[-4000:]
-
         salvar_mensagem(session_id, "system", novo_contexto, 2)
         return resposta
 
     except Exception as e:
-        return f"💥 Erro interno backend: {str(e)}"
-
+        return f"💥 Erro interno no backend: {str(e)}"
 
 # ------------------------------------------------------------
-# 4️⃣ FastAPI
+# 4️⃣ FastAPI + CORS corrigido
 # ------------------------------------------------------------
 app = FastAPI(title="Z.ai Conversa Inteligente (Contexto Incremental + Timeout)")
+
 origins = [
-    "http://127.0.0.1:4200",              # desenvolvimento local
     "http://localhost:4200",
-    "https://chat-zai-frontend.vercel.app",  # frontend hospedado no Vercel
+    "http://127.0.0.1:4200",
+    "https://chat-zai-frontend.vercel.app",  # domínio do frontend
 ]
-
-app = FastAPI(title="Z.ai Conversa Inteligente (Contexto Incremental + Timeout)")
 
 app.add_middleware(
     CORSMiddleware,
@@ -142,12 +134,9 @@ class Mensagem(BaseModel):
     texto: str
     session_id: str
 
-
 @app.get("/")
 async def home():
     return {"status": "✅ API Z.ai ativa e mantendo contexto incremental."}
-
-
 
 @app.post("/mensagem")
 async def mensagem(request: Request):
@@ -161,16 +150,14 @@ async def mensagem(request: Request):
     resposta = f"Você disse: {texto}"
     return {"resposta": resposta}
 
-
-@app.get("/contexto/{session_id}")
-async def get_contexto(session_id: str):
-    return {"contexto": buscar_contexto(session_id)}
-
-
+# Endpoint CORS preflight
 @app.options("/mensagem")
 async def options_mensagem():
     return {"message": "CORS OK"}
 
+@app.get("/contexto/{session_id}")
+async def get_contexto(session_id: str):
+    return {"contexto": buscar_contexto(session_id)}
 
 # ------------------------------------------------------------
 # 5️⃣ Ping aleatório (Render Free)
@@ -186,8 +173,7 @@ async def ping_randomico():
                 print("🔁 Ping enviado para manter ativo.")
             except Exception as e:
                 print(f"Erro no ping: {e}")
-            await asyncio.sleep(random.randint(300, 600))  # 5 a 10 minutos
-
+            await asyncio.sleep(random.randint(300, 600))
 
 @app.on_event("startup")
 async def startup_event():
