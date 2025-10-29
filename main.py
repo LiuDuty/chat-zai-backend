@@ -157,10 +157,7 @@ async def mensagem(request: Request):
     resposta = f"Você disse: {texto}"
     return {"resposta": resposta}
 
-# Endpoint CORS preflight
-@app.options("/mensagem")
-async def options_mensagem():
-    return {"message": "CORS OK"}
+
 
 @app.get("/contexto/{session_id}")
 async def get_contexto(session_id: str):
