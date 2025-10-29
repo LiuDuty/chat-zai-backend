@@ -1,30 +1,29 @@
 # ============================================================
 # SISTEMA DE CONVERSA INTELIGENTE (Z.ai + FastAPI)
 # Contexto incremental + Timeout estendido + Ping Render Free
-# CORS dinâmico, configurado via variável de ambiente
+# CORS com valores fixos (para diagnóstico)
 # ============================================================
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import sqlite3, os, asyncio, random, httpx
-from dotenv import load_dotenv
+# 'load_dotenv' e 'dotenv' não são mais necessários
+# from dotenv import load_dotenv
 from contextlib import asynccontextmanager
 
 # ------------------------------------------------------------
 # 1️⃣ Configurações
 # ------------------------------------------------------------
-load_dotenv()
-API_KEY = os.getenv("ZAI_API_KEY")
+# --- MUDANÇA: Valores "hardcoded" no lugar de variáveis de ambiente ---
+API_KEY = "03038b49c41b4bbdb1ce54888b54d223.cOjmjTibnl3uqERW"
 API_URL = "https://api.z.ai/api/paas/v4/chat/completions"
 DB_FILE = "conversas.db"
-RENDER_URL = os.getenv("RENDER_URL")
+RENDER_URL = "https://chat-zai-backend.onrender.com"
+FRONTEND_URL = "https://chat-zai-frontend.vercel.app"
+# --------------------------------------------------------------------
 
-# --- MUDANÇA 1: Ler a URL do frontend da variável de ambiente ---
-# Pega a URL do frontend a partir da variável de ambiente.
-# Usamos um fallback (valor padrão) para o desenvolvimento local.
-FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:4200")
-print(f"🔍 DEBUG 1: A variável de ambiente FRONTEND_URL é: {FRONTEND_URL}")
+print(f"🔍 DEBUG 1: A URL do Frontend (hardcoded) é: {FRONTEND_URL}")
 
 SYSTEM_PROMPT = (
     "Você é o KISS AZ-900, um assistente de estudos do exame Microsoft Azure Fundamentals (AZ-900). "
@@ -119,18 +118,13 @@ async def atualizar_e_gerar_resposta(session_id: str, nova_mensagem: str):
         return f"💥 Erro interno no backend: {str(e)}"
 
 # ------------------------------------------------------------
-# 4️⃣ FastAPI + CORS dinâmico
+# 4️⃣ FastAPI + CORS com valores fixos
 # ------------------------------------------------------------
-# --- MUDANÇA 2: Usar um gerenciador de ciclo de vida (lifespan) ---
-# Esta é a forma moderna e recomendada de lidar com eventos de startup/shutdown.
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Código de inicialização (startup)
     print("🚀 Aplicação está iniciando...")
-    # Inicia a tarefa de ping em segundo plano
     ping_task = asyncio.create_task(ping_randomico())
     yield
-    # Código de desligamento (shutdown)
     print("🛑 Aplicação está sendo desligada.")
     ping_task.cancel()
     try:
@@ -141,23 +135,19 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Z.ai Conversa Inteligente (Contexto Incremental + Timeout)", lifespan=lifespan)
 
-# --- MUDANÇA FINAL: Middleware para logar os headers de resposta ---
 @app.middleware("http")
 async def log_response_headers(request: Request, call_next):
     response = await call_next(request)
-    # --- LINHA CORRIGIDA: Troquei `request.url.method` por `request.method` ---
     print(f"🌐 DEBUG 3: Resposta para {request.method} {request.url.path} com headers: {dict(response.headers)}")
     return response
-# -----------------------------------------------------------------
 
-# --- MUDANÇA 3: Usar a variável de ambiente na lista de origens permitidas ---
+# --- MUDANÇA: Usando a lista com a URL fixa ---
 allowed_origins = [
     "http://localhost:4200",
     "http://127.0.0.1:4200",
-    FRONTEND_URL,  # Agora a URL é dinâmica, vinda do .env
+    FRONTEND_URL,  # Agora a URL é fixa no código
 ]
 
-# --- MUDANÇA 4: Adicionar um log para depuração ---
 print(f"🔍 DEBUG 2: A lista final de origens permitidas para o CORS é: {allowed_origins}")
 
 app.add_middleware(
@@ -196,8 +186,6 @@ async def get_contexto(session_id: str):
 # 5️⃣ Ping aleatório (Render Free)
 # ------------------------------------------------------------
 async def ping_randomico():
-    # IMPORTANTE: Certifique-se de que RENDER_URL no seu .env aponta para a URL correta do serviço!
-    # Ex: https://zai-backend-v2.onrender.com
     if not RENDER_URL:
         print("⚠️ RENDER_URL não definido. Ping desativado.")
         return
