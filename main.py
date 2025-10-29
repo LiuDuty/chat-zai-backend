@@ -1,7 +1,7 @@
 # ============================================================
 # SISTEMA DE CONVERSA INTELIGENTE (Z.ai + FastAPI)
 # Contexto incremental + Timeout estendido + Ping Render Free
-# CORS corrigido para chat-zai-frontend.vercel.app
+# CORS dinâmico, configurado via variável de ambiente
 # ============================================================
 
 from fastapi import FastAPI, Request
@@ -18,6 +18,11 @@ API_KEY = os.getenv("ZAI_API_KEY")
 API_URL = "https://api.z.ai/api/paas/v4/chat/completions"
 DB_FILE = "conversas.db"
 RENDER_URL = os.getenv("RENDER_URL")
+
+# --- MUDANÇA 1: Ler a URL do frontend da variável de ambiente ---
+# Pega a URL do frontend a partir da variável de ambiente.
+# Usamos um fallback (valor padrão) para o desenvolvimento local.
+FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:4200")
 
 SYSTEM_PROMPT = (
     "Você é o KISS AZ-900, um assistente de estudos do exame Microsoft Azure Fundamentals (AZ-900). "
@@ -112,19 +117,20 @@ async def atualizar_e_gerar_resposta(session_id: str, nova_mensagem: str):
         return f"💥 Erro interno no backend: {str(e)}"
 
 # ------------------------------------------------------------
-# 4️⃣ FastAPI + CORS corrigido
+# 4️⃣ FastAPI + CORS dinâmico
 # ------------------------------------------------------------
 app = FastAPI(title="Z.ai Conversa Inteligente (Contexto Incremental + Timeout)")
 
-origins = [
+# --- MUDANÇA 2: Usar a variável de ambiente na lista de origens permitidas ---
+allowed_origins = [
     "http://localhost:4200",
     "http://127.0.0.1:4200",
-    "https://chat-zai-frontend.vercel.app",  # domínio do frontend
+    FRONTEND_URL,  # Agora a URL é dinâmica, vinda do .env
 ]
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins,
+    allow_origins=allowed_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
