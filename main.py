@@ -1,29 +1,23 @@
 # ============================================================
-# SISTEMA DE CONVERSA INTELIGENTE (Z.ai + FastAPI)
-# Contexto incremental + Timeout estendido + Ping Render Free
-# CORS com valores fixos (para diagnóstico)
+#  SISTEMA DE CONVERSA INTELIGENTE (Z.ai + FastAPI)
+#  Contexto incremental + Timeout estendido + Ping Render Free
+#  CORS fixo + Integração real com API Z.ai
 # ============================================================
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-import sqlite3, os, asyncio, random, httpx
-# 'load_dotenv' e 'dotenv' não são mais necessários
-# from dotenv import load_dotenv
+import sqlite3, asyncio, random, httpx
 from contextlib import asynccontextmanager
 
 # ------------------------------------------------------------
 # 1️⃣ Configurações
 # ------------------------------------------------------------
-# --- MUDANÇA: Valores "hardcoded" no lugar de variáveis de ambiente ---
 API_KEY = "03038b49c41b4bbdb1ce54888b54d223.cOjmjTibnl3uqERW"
 API_URL = "https://api.z.ai/api/paas/v4/chat/completions"
 DB_FILE = "conversas.db"
 RENDER_URL = "https://chat-zai-backend.onrender.com"
 FRONTEND_URL = "https://chat-zai-frontend.vercel.app"
-# --------------------------------------------------------------------
-
-print(f"🔍 DEBUG 1: A URL do Frontend (hardcoded) é: {FRONTEND_URL}")
 
 SYSTEM_PROMPT = (
     "Você é o KISS AZ-900, um assistente de estudos do exame Microsoft Azure Fundamentals (AZ-900). "
@@ -50,24 +44,24 @@ def init_db():
 
 init_db()
 
-
 def salvar_mensagem(session_id, role, content, tipo):
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
     if tipo == 2:
+        # Atualiza o contexto (remove anterior e insere novo)
         c.execute("DELETE FROM conversas WHERE session_id=? AND tipo_mensagem=2", (session_id,))
         c.execute(
             "INSERT INTO conversas (session_id, role, content, tipo_mensagem) VALUES (?, ?, ?, 2)",
             (session_id, "system", content),
         )
     else:
+        # Insere mensagem normal
         c.execute(
             "INSERT INTO conversas (session_id, role, content, tipo_mensagem) VALUES (?, ?, ?, 9)",
             (session_id, role, content),
         )
     conn.commit()
     conn.close()
-
 
 def buscar_contexto(session_id):
     conn = sqlite3.connect(DB_FILE)
@@ -78,7 +72,7 @@ def buscar_contexto(session_id):
     return r[0] if r else ""
 
 # ------------------------------------------------------------
-# 3️⃣ Função principal (assíncrona com timeout)
+# 3️⃣ Lógica principal: enviar à Z.ai e atualizar contexto
 # ------------------------------------------------------------
 async def atualizar_e_gerar_resposta(session_id: str, nova_mensagem: str):
     try:
@@ -108,17 +102,19 @@ async def atualizar_e_gerar_resposta(session_id: str, nova_mensagem: str):
 
         salvar_mensagem(session_id, "assistant", resposta, 9)
 
+        # Atualiza contexto salvo
         novo_contexto = f"{contexto}\nUsuário: {nova_mensagem}\nAssistente: {resposta}".strip()
         if len(novo_contexto) > 4000:
             novo_contexto = novo_contexto[-4000:]
         salvar_mensagem(session_id, "system", novo_contexto, 2)
+
         return resposta
 
     except Exception as e:
         return f"💥 Erro interno no backend: {str(e)}"
 
 # ------------------------------------------------------------
-# 4️⃣ FastAPI + CORS com valores fixos
+# 4️⃣ FastAPI + CORS
 # ------------------------------------------------------------
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -130,25 +126,18 @@ async def lifespan(app: FastAPI):
     try:
         await ping_task
     except asyncio.CancelledError:
-        print("Tarefa de ping cancelada com sucesso.")
+        print("Tarefa de ping cancelada.")
 
+app = FastAPI(
+    title="Z.ai Conversa Inteligente (Contexto Incremental + Timeout)",
+    lifespan=lifespan
+)
 
-app = FastAPI(title="Z.ai Conversa Inteligente (Contexto Incremental + Timeout)", lifespan=lifespan)
-
-@app.middleware("http")
-async def log_response_headers(request: Request, call_next):
-    response = await call_next(request)
-    print(f"🌐 DEBUG 3: Resposta para {request.method} {request.url.path} com headers: {dict(response.headers)}")
-    return response
-
-# --- MUDANÇA: Usando a lista com a URL fixa ---
 allowed_origins = [
     "http://localhost:4200",
     "http://127.0.0.1:4200",
-    FRONTEND_URL,  # Agora a URL é fixa no código
+    FRONTEND_URL,
 ]
-
-print(f"🔍 DEBUG 2: A lista final de origens permitidas para o CORS é: {allowed_origins}")
 
 app.add_middleware(
     CORSMiddleware,
@@ -162,6 +151,9 @@ class Mensagem(BaseModel):
     texto: str
     session_id: str
 
+# ------------------------------------------------------------
+# 5️⃣ Rotas
+# ------------------------------------------------------------
 @app.get("/")
 async def home():
     return {"status": "✅ API Z.ai ativa e mantendo contexto incremental."}
@@ -169,13 +161,13 @@ async def home():
 @app.post("/mensagem")
 async def mensagem(request: Request):
     data = await request.json()
-    texto = data.get("texto", "")
+    texto = data.get("texto", "").strip()
     session_id = data.get("session_id", "sessao")
 
     if not texto:
         return {"resposta": "Por favor, envie uma mensagem válida."}
 
-    resposta = f"Você disse: {texto}"
+    resposta = await atualizar_e_gerar_resposta(session_id, texto)
     return {"resposta": resposta}
 
 @app.get("/contexto/{session_id}")
@@ -183,7 +175,7 @@ async def get_contexto(session_id: str):
     return {"contexto": buscar_contexto(session_id)}
 
 # ------------------------------------------------------------
-# 5️⃣ Ping aleatório (Render Free)
+# 6️⃣ Ping Render Free
 # ------------------------------------------------------------
 async def ping_randomico():
     if not RENDER_URL:
