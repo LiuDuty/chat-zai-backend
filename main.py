@@ -9,6 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import sqlite3, os, asyncio, random, httpx
 from dotenv import load_dotenv
+from contextlib import asynccontextmanager
 
 # ------------------------------------------------------------
 # 1️⃣ Configurações
@@ -23,7 +24,7 @@ RENDER_URL = os.getenv("RENDER_URL")
 # Pega a URL do frontend a partir da variável de ambiente.
 # Usamos um fallback (valor padrão) para o desenvolvimento local.
 FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:4200")
-print(f"🔍 DEBUG: A variável FRONTEND_URL é: {FRONTEND_URL}")
+print(f"🔍 DEBUG 1: A variável de ambiente FRONTEND_URL é: {FRONTEND_URL}")
 
 SYSTEM_PROMPT = (
     "Você é o KISS AZ-900, um assistente de estudos do exame Microsoft Azure Fundamentals (AZ-900). "
@@ -120,14 +121,35 @@ async def atualizar_e_gerar_resposta(session_id: str, nova_mensagem: str):
 # ------------------------------------------------------------
 # 4️⃣ FastAPI + CORS dinâmico
 # ------------------------------------------------------------
-app = FastAPI(title="Z.ai Conversa Inteligente (Contexto Incremental + Timeout)")
+# --- MUDANÇA 2: Usar um gerenciador de ciclo de vida (lifespan) ---
+# Esta é a forma moderna e recomendada de lidar com eventos de startup/shutdown.
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Código de inicialização (startup)
+    print("🚀 Aplicação está iniciando...")
+    # Inicia a tarefa de ping em segundo plano
+    ping_task = asyncio.create_task(ping_randomico())
+    yield
+    # Código de desligamento (shutdown)
+    print("🛑 Aplicação está sendo desligada.")
+    ping_task.cancel()
+    try:
+        await ping_task
+    except asyncio.CancelledError:
+        print("Tarefa de ping cancelada com sucesso.")
 
-# --- MUDANÇA 2: Usar a variável de ambiente na lista de origens permitidas ---
+
+app = FastAPI(title="Z.ai Conversa Inteligente (Contexto Incremental + Timeout)", lifespan=lifespan)
+
+# --- MUDANÇA 3: Usar a variável de ambiente na lista de origens permitidas ---
 allowed_origins = [
     "http://localhost:4200",
     "http://127.0.0.1:4200",
     FRONTEND_URL,  # Agora a URL é dinâmica, vinda do .env
 ]
+
+# --- MUDANÇA 4: Adicionar um log para depuração ---
+print(f"🔍 DEBUG 2: A lista final de origens permitidas para o CORS é: {allowed_origins}")
 
 app.add_middleware(
     CORSMiddleware,
@@ -157,8 +179,6 @@ async def mensagem(request: Request):
     resposta = f"Você disse: {texto}"
     return {"resposta": resposta}
 
-
-
 @app.get("/contexto/{session_id}")
 async def get_contexto(session_id: str):
     return {"contexto": buscar_contexto(session_id)}
@@ -167,18 +187,16 @@ async def get_contexto(session_id: str):
 # 5️⃣ Ping aleatório (Render Free)
 # ------------------------------------------------------------
 async def ping_randomico():
+    # IMPORTANTE: Certifique-se de que RENDER_URL no seu .env aponta para a URL correta do serviço!
+    # Ex: https://zai-backend-v2.onrender.com
     if not RENDER_URL:
         print("⚠️ RENDER_URL não definido. Ping desativado.")
         return
-    async with httpx.AsyncClient() as client:
-        while True:
-            try:
+    while True:
+        try:
+            async with httpx.AsyncClient() as client:
                 await client.get(RENDER_URL)
                 print("🔁 Ping enviado para manter ativo.")
-            except Exception as e:
-                print(f"Erro no ping: {e}")
-            await asyncio.sleep(random.randint(300, 600))
-
-@app.on_event("startup")
-async def startup_event():
-    asyncio.create_task(ping_randomico())
+        except Exception as e:
+            print(f"Erro no ping: {e}")
+        await asyncio.sleep(random.randint(300, 600))
