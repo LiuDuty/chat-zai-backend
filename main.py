@@ -23,6 +23,7 @@ RENDER_URL = os.getenv("RENDER_URL")
 # Pega a URL do frontend a partir da variável de ambiente.
 # Usamos um fallback (valor padrão) para o desenvolvimento local.
 FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:4200")
+print(f"🔍 DEBUG: A variável FRONTEND_URL é: {FRONTEND_URL}")
 
 SYSTEM_PROMPT = (
     "Você é o KISS AZ-900, um assistente de estudos do exame Microsoft Azure Fundamentals (AZ-900). "
