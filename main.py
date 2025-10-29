@@ -141,6 +141,17 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Z.ai Conversa Inteligente (Contexto Incremental + Timeout)", lifespan=lifespan)
 
+# --- MUDANÇA FINAL: Middleware para logar os headers de resposta ---
+# Este middleware vai interceptar todas as respostas e imprimir seus headers no log.
+# É a nossa prova definitiva para saber se o header de CORS está sendo gerado pela aplicação.
+@app.middleware("http")
+async def log_response_headers(request: Request, call_next):
+    response = await call_next(request)
+    # Imprime no console os headers que a aplicação está enviando
+    print(f"🌐 DEBUG 3: Resposta para {request.url.method} {request.url.path} com headers: {dict(response.headers)}")
+    return response
+# -----------------------------------------------------------------
+
 # --- MUDANÇA 3: Usar a variável de ambiente na lista de origens permitidas ---
 allowed_origins = [
     "http://localhost:4200",
