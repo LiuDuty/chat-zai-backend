@@ -9,4 +9,4 @@ services:
       - key: ZAI_API_KEY
         sync: false
       - key: FRONTEND_URL
-        value: "https://quiz-azure.vercel.app"
+        value: "https://chat-zai-frontend.vercel.app"
