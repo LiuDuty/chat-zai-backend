@@ -4,7 +4,7 @@ import winsound
 import threading
 import pyttsx3
 
-hora_alarme = "16:46"
+hora_alarme = "17:01"
 parar = False
 
 engine = pyttsx3.init()
@@ -36,7 +36,7 @@ while True:
         print("\n⏰ Alarme disparou! Tocando + falando...\n")
         while not parar:
             winsound.Beep(3000, 800)  # toque único
-            falar("time sheet")
+            falar("quase na hora de marcar o ponto")
             time.sleep(0.5)
 
         print("🔕 Alarme desligado!")
