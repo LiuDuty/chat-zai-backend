@@ -260,7 +260,7 @@ async def atualizar_e_gerar_resposta(session_id: str, nova_mensagem: str):
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": f"A pergunta original do usuário foi: '{nova_mensagem}'"},
                 {"role": "user", "content": f"Com base nisso, realizei uma busca no banco de dados e obtive os seguintes resultados brutos (código_url, código_interno, valor):\n{resultados_encontrados}"},
-                {"role": "user", "content": "Por favor, apresente esses resultados de forma clara e amigável para o usuário, utilize o link https://www.openhouses.net.br/imovel/ e acrescente os codigos para usuario poder entrar nos links e ver as imagens. Se a lista de resultados estiver vazia, informe que nenhum imóvel foi encontrado com os critérios e sugira que ele ajuste a busca."}
+                {"role": "user", "content": "Por favor, apresente esses resultados de forma clara e amigável para o usuário, sempre utilize o link https://www.openhouses.net.br/imovel/ e acrescente os codigos para usuario poder entrar nos links e ver as imagens. Se a lista de resultados estiver vazia, informe que nenhum imóvel foi encontrado com os critérios e sugira que ele ajuste a busca."}
             ]
 
             async with httpx.AsyncClient(timeout=timeout_config) as client:
