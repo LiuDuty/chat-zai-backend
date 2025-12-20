@@ -2,13 +2,17 @@
 #  SISTEMA DE CONVERSA INTELIGENTE (Z.ai + FastAPI) + BUSCA DE IMÓVEIS
 #  Contexto incremental + Timeout estendido + Ping Render Free
 #  CORS fixo + Integração real com API Z.ai + Lógica de busca
+#  Rate Limiting + Retry com Exponential Backoff + Cache + Debug Console + SQL Query
 # ============================================================
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
-import sqlite3, asyncio, random, httpx, json
+import sqlite3, asyncio, random, httpx, json, time, hashlib
 from contextlib import asynccontextmanager
+from typing import Dict, Optional, Tuple, List
+from datetime import datetime, timedelta
 
 # ------------------------------------------------------------
 # 1️⃣ Configurações
@@ -16,11 +20,20 @@ from contextlib import asynccontextmanager
 API_KEY = "03038b49c41b4bbdb1ce54888b54d223.cOjmjTibnl3uqERW"
 API_URL = "https://api.z.ai/api/paas/v4/chat/completions"
 DB_FILE = "conversas.db"
-DB_IMOBILIARIA = "imobiliaria.db" # Adicionando o DB de imóveis
+DB_IMOBILIARIA = "imobiliaria.db"
 RENDER_URL = "https://chatzai.onrender.com"
 FRONTEND_URL = "https://chat-zai-frontend.vercel.app"
 
-# Prompt para o assistente (persona)
+# Configurações de Rate Limiting
+MAX_REQUESTS_PER_MINUTE = 20  # Limite conservador para evitar o erro 1305
+REQUESTS_TRACKER = {}  # Dict para rastrear requisições por IP/session
+CACHE_EXPIRE_TIME = 300  # 5 minutos de cache para respostas
+RESPONSE_CACHE = {}  # Cache para respostas recentes
+
+# Configurações de Debug
+DEBUG_MODE = True  # Ativa o modo de depuração
+
+# Prompt para o assistente (persona) - SEMPRE DO CÓDIGO
 SYSTEM_PROMPT = (
     """🔑 **Olá! Sou o OpenHouses** — seu assistente de consultoria exclusivo para imóveis de alto padrão!
 
@@ -33,7 +46,7 @@ SYSTEM_PROMPT = (
 Vamos encontrar o seu próximo lar?"""
 )
 
-# Novo prompt para a IA interpretar a intenção de busca do usuário
+# Novo prompt para a IA interpretar a intenção de busca do usuário - SEMPRE DO CÓDIGO
 INTERPRETATION_PROMPT = """
 Você é um interpretador de consultas de imóveis. Sua ÚNICA tarefa é analisar a mensagem do usuário e extrair critérios de busca.
 Retorne EXCLUSIVAMENTE um objeto JSON. Não adicione nenhum texto, explicação ou formatação além do JSON.
@@ -71,7 +84,7 @@ def init_db():
             session_id TEXT NOT NULL,
             role TEXT,
             content TEXT,
-            tipo_mensagem INTEGER
+            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
         )
     """)
     conn.commit()
@@ -79,40 +92,133 @@ def init_db():
 
 init_db()
 
-def salvar_mensagem(session_id, role, content, tipo):
+def salvar_mensagem(session_id, role, content):
+    """Salva mensagens no banco de dados para manter o histórico"""
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
-    if tipo == 2:
-        c.execute("DELETE FROM conversas WHERE session_id=? AND tipo_mensagem=2", (session_id,))
-        c.execute(
-            "INSERT INTO conversas (session_id, role, content, tipo_mensagem) VALUES (?, ?, ?, 2)",
-            (session_id, "system", content),
-        )
-    else:
-        c.execute(
-            "INSERT INTO conversas (session_id, role, content, tipo_mensagem) VALUES (?, ?, ?, 9)",
-            (session_id, role, content),
-        )
+    c.execute(
+        "INSERT INTO conversas (session_id, role, content) VALUES (?, ?, ?)",
+        (session_id, role, content),
+    )
     conn.commit()
     conn.close()
 
-def buscar_contexto(session_id):
+def buscar_historico_conversa(session_id, limite=20):
+    """Busca o histórico completo da conversa para manter o contexto"""
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
-    c.execute("SELECT content FROM conversas WHERE session_id=? AND tipo_mensagem=2", (session_id,))
-    r = c.fetchone()
+    # Busca as últimas mensagens da conversa em ordem cronológica
+    c.execute(
+        "SELECT role, content FROM conversas WHERE session_id=? ORDER BY timestamp DESC LIMIT ?",
+        (session_id, limite),
+    )
+    resultados = c.fetchall()
     conn.close()
-    return r[0] if r else ""
+    
+    # Inverte para ordem cronológica correta
+    if resultados:
+        return [{"role": role, "content": content} for role, content in reversed(resultados)]
+    return []
 
 # ------------------------------------------------------------
-# 3️⃣ Lógica de busca de imóveis (integrada do seu código)
+# 3️⃣ Rate Limiting e Cache
 # ------------------------------------------------------------
-def buscar_imoveis_robusto(filtro_dicionario: dict) -> list[tuple]:
+def check_rate_limit(identifier: str) -> bool:
+    """Verifica se o identificador (IP ou session_id) excedeu o limite de requisições"""
+    now = time.time()
+    minute_ago = now - 60
+    
+    # Inicializa o registro se não existir
+    if identifier not in REQUESTS_TRACKER:
+        REQUESTS_TRACKER[identifier] = []
+    
+    # Remove requisições antigas (mais de 1 minuto)
+    REQUESTS_TRACKER[identifier] = [
+        req_time for req_time in REQUESTS_TRACKER[identifier] if req_time > minute_ago
+    ]
+    
+    # Verifica se excedeu o limite
+    if len(REQUESTS_TRACKER[identifier]) >= MAX_REQUESTS_PER_MINUTE:
+        return False
+    
+    # Adiciona a requisição atual
+    REQUESTS_TRACKER[identifier].append(now)
+    return True
+
+def get_cache_key(prompt_messages: list) -> str:
+    """Gera uma chave de cache baseada no conteúdo das mensagens"""
+    content = json.dumps(prompt_messages, sort_keys=True)
+    return hashlib.md5(content.encode()).hexdigest()
+
+def get_cached_response(cache_key: str) -> Optional[str]:
+    """Recupera uma resposta do cache se ainda for válida"""
+    if cache_key in RESPONSE_CACHE:
+        timestamp, response = RESPONSE_CACHE[cache_key]
+        if time.time() - timestamp < CACHE_EXPIRE_TIME:
+            return response
+        else:
+            # Remove do cache se expirou
+            del RESPONSE_CACHE[cache_key]
+    return None
+
+def cache_response(cache_key: str, response: str):
+    """Armazena uma resposta no cache"""
+    RESPONSE_CACHE[cache_key] = (time.time(), response)
+
+async def make_api_request_with_retry(messages: list, max_retries=3) -> Tuple[bool, str]:
+    """
+    Faz requisição à API com retry e exponential backoff
+    Retorna (sucesso, resposta_ou_erro)
+    """
+    headers = {"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json"}
+    
+    for attempt in range(max_retries):
+        # Calcula o tempo de espera (exponential backoff)
+        if attempt > 0:
+            wait_time = 2 ** attempt + random.uniform(0, 1)
+            print(f"Tentativa {attempt + 1}/{max_retries}. Aguardando {wait_time:.2f} segundos...")
+            await asyncio.sleep(wait_time)
+        
+        try:
+            timeout_config = httpx.Timeout(120.0)
+            async with httpx.AsyncClient(timeout=timeout_config) as client:
+                response = await client.post(
+                    API_URL, 
+                    json={"model": "glm-4.5-flash", "messages": messages}, 
+                    headers=headers
+                )
+            
+            if response.status_code == 200:
+                data = response.json()
+                content = data.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
+                return True, content
+            elif response.status_code == 429 or "1305" in response.text:
+                # Rate limit exceeded
+                error_msg = f"Limite de requisições excedido (tentativa {attempt + 1}/{max_retries})"
+                print(f"❌ {error_msg}: {response.text}")
+                if attempt == max_retries - 1:
+                    return False, "Desculpe, estou recebendo muitas solicitações no momento. Por favor, tente novamente em alguns minutos."
+            else:
+                print(f"❌ Erro na API Z.ai (tentativa {attempt + 1}/{max_retries}): {response.text}")
+                if attempt == max_retries - 1:
+                    return False, f"Erro ao comunicar com a API: {response.text}"
+        
+        except Exception as e:
+            print(f"❌ Exceção na requisição (tentativa {attempt + 1}/{max_retries}): {str(e)}")
+            if attempt == max_retries - 1:
+                return False, f"Erro de conexão com a API: {str(e)}"
+    
+    return False, "Não foi possível obter resposta após várias tentativas."
+
+# ------------------------------------------------------------
+# 4️⃣ Lógica de busca de imóveis (integrada do seu código)
+# ------------------------------------------------------------
+def buscar_imoveis_robusto(filtro_dicionario: dict) -> Tuple[list[tuple], str, List]:
     """
     Versão robusta que limpa campos monetários formatados como string
     diretamente na consulta SQL para permitir comparações numéricas.
     Suporta filtros IN para listas e _contem para campos de texto múltiplos.
-    Retorna: codigo_url, codigo_interno, valor.
+    Retorna: (resultados, sql_query, params)
     """
     conn = sqlite3.connect(DB_IMOBILIARIA)
     cursor = conn.cursor()
@@ -214,98 +320,144 @@ def buscar_imoveis_robusto(filtro_dicionario: dict) -> list[tuple]:
     
     conn.close()
     
-    return resultados
+    return resultados, sql, params
 
 # ------------------------------------------------------------
-# 4️⃣ Lógica principal: Interpretar, Buscar e Gerar Resposta
+# 5️⃣ Lógica principal: Interpretar, Buscar e Gerar Resposta
 # ------------------------------------------------------------
-async def atualizar_e_gerar_resposta(session_id: str, nova_mensagem: str):
+async def atualizar_e_gerar_resposta(session_id: str, nova_mensagem: str, client_ip: str = None):
     try:
-        salvar_mensagem(session_id, "user", nova_mensagem, 9)
-        contexto = buscar_contexto(session_id)
-
+        # Verifica rate limiting usando session_id ou IP
+        identifier = session_id if session_id else client_ip
+        if not check_rate_limit(identifier):
+            return "Desculpe, você fez muitas solicitações recentemente. Por favor, aguarde um momento antes de tentar novamente.", {}, "", []
+        
+        # Salva a mensagem do usuário no histórico
+        salvar_mensagem(session_id, "user", nova_mensagem)
+        
+        # Busca o histórico completo da conversa
+        historico = buscar_historico_conversa(session_id)
+        
         # --- ETAPA 1: INTERPRETAR A INTENÇÃO DO USUÁRIO ---
         prompt_interpretacao = [
             {"role": "system", "content": INTERPRETATION_PROMPT},
             {"role": "user", "content": nova_mensagem},
         ]
-
-        headers = {"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json"}
-        timeout_config = httpx.Timeout(120.0)
-
-        async with httpx.AsyncClient(timeout=timeout_config) as client:
-            resp_interpretacao = await client.post(API_URL, json={"model": "glm-4.5-flash", "messages": prompt_interpretacao}, headers=headers)
-
-        if resp_interpretacao.status_code != 200:
-            # Se a API falhar na interpretação, avisa e continua com uma conversa normal
-            print(f"❌ Erro na API Z.ai (interpretação): {resp_interpretacao.text}")
-            filtro_json = {}
-        else:
-            data_interpretacao = resp_interpretacao.json()
-            resposta_interpretacao = data_interpretacao.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
+        
+        # Verifica cache para a interpretação
+        cache_key = get_cache_key(prompt_interpretacao)
+        cached_response = get_cached_response(cache_key)
+        
+        if cached_response:
+            print("Usando resposta em cache para interpretação")
             try:
-                filtro_json = json.loads(resposta_interpretacao)
+                filtro_json = json.loads(cached_response)
             except json.JSONDecodeError:
-                print(f"⚠️ A IA não retornou um JSON válido na interpretação: {resposta_interpretacao}")
+                print(f"⚠️ Cache inválido para interpretação: {cached_response}")
                 filtro_json = {}
+        else:
+            # Faz requisição à API com retry
+            sucesso, resposta_interpretacao = await make_api_request_with_retry(prompt_interpretacao)
+            
+            if not sucesso:
+                # Se falhar, continua com uma conversa normal
+                filtro_json = {}
+            else:
+                try:
+                    filtro_json = json.loads(resposta_interpretacao)
+                    # Armazena no cache
+                    cache_response(cache_key, resposta_interpretacao)
+                except json.JSONDecodeError:
+                    print(f"⚠️ A IA não retornou um JSON válido na interpretação: {resposta_interpretacao}")
+                    filtro_json = {}
 
+        # Inicializa variáveis de debug
+        sql_query = ""
+        sql_params = []
+        
         # --- ETAPA 2: BUSCAR NO BANCO (SE NECESSÁRIO) E GERAR RESPOSTA FINAL ---
         if filtro_json:
             # Se o filtro não estiver vazio, realiza a busca
             print(f"🔍 Filtro detectado: {filtro_json}")
-            resultados_encontrados = buscar_imoveis_robusto(filtro_json)
+            resultados_encontrados, sql_query, sql_params = buscar_imoveis_robusto(filtro_json)
             
-            # Agora, pede à IA para formatar os resultados
+            # Monta o prompt com o histórico da conversa e os resultados da busca
             prompt_geracao = [
                 {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": f"A pergunta original do usuário foi: '{nova_mensagem}'"},
-                {"role": "user", "content": f"Com base nisso, realizei uma busca no banco de dados e obtive os seguintes resultados brutos (código_url, código_interno, valor):\n{resultados_encontrados}"},
-                {"role": "user", "content": "Por favor, apresente esses resultados de forma clara e amigável para o usuário, sempre utilize o link https://www.openhouses.net.br/imovel/ e acrescente os codigos para usuario poder entrar nos links e ver as imagens. Se a lista de resultados estiver vazia, informe que nenhum imóvel foi encontrado com os critérios e sugira que ele ajuste a busca."}
             ]
-
-            async with httpx.AsyncClient(timeout=timeout_config) as client:
-                resp_geracao = await client.post(API_URL, json={"model": "glm-4.5-flash", "messages": prompt_geracao}, headers=headers)
             
-            if resp_geracao.status_code != 200:
-                resposta = f"❌ Erro ao gerar a resposta final com a API Z.ai: {resp_geracao.text}"
+            # Adiciona o histórico da conversa (exceto a última mensagem do usuário que já está incluída)
+            prompt_geracao.extend(historico[:-1])
+            
+            # Adiciona a informação sobre a busca realizada
+            prompt_geracao.append({
+                "role": "system", 
+                "content": f"Com base na última mensagem do usuário, realizei uma busca no banco de dados e obtive os seguintes resultados brutos (código_url, codigo_interno, valor):\n{resultados_encontrados}"
+            })
+            
+            # Adiciona a instrução para formatar os resultados
+            prompt_geracao.append({
+                "role": "system", 
+                "content": "Por favor, apresente esses resultados de forma clara e amigável para o usuário, sempre utilize o link https://www.openhouses.net.br/imovel/codigo_url ou use https://www.openhouses.net.br/imovel/?ref=codigo_interno . Se a lista de resultados estiver vazia, informe que nenhum imóvel foi encontrado com os critérios e sugira que ele ajuste a busca ou que pesquise diretamente no site da imobiliária https://www.openhouses.net.br/."
+            })
+            
+            # Verifica cache para a geração
+            cache_key = get_cache_key(prompt_geracao)
+            cached_response = get_cached_response(cache_key)
+            
+            if cached_response:
+                print("Usando resposta em cache para geração")
+                resposta = cached_response
             else:
-                data_geracao = resp_geracao.json()
-                resposta = data_geracao.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
+                # Faz requisição à API com retry
+                sucesso, resposta = await make_api_request_with_retry(prompt_geracao)
+                
+                if sucesso:
+                    # Armazena no cache
+                    cache_response(cache_key, resposta)
+                else:
+                    resposta = resposta  # Já contém a mensagem de erro
 
         else:
-            # Se o filtro estiver vazio, é uma conversa normal. Usa o contexto.
+            # Se o filtro estiver vazio, é uma conversa normal. Usa o histórico completo.
             prompt_conversa = [
                 {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "system", "content": f"Contexto até agora:\n{contexto}"},
-                {"role": "user", "content": nova_mensagem},
             ]
             
-            async with httpx.AsyncClient(timeout=timeout_config) as client:
-                resp_conversa = await client.post(API_URL, json={"model": "glm-4.5-flash", "messages": prompt_conversa}, headers=headers)
-
-            if resp_conversa.status_code != 200:
-                resposta = f"❌ Erro na API Z.ai (conversa): {resp_conversa.text}"
+            # Adiciona todo o histórico da conversa
+            prompt_conversa.extend(historico)
+            
+            # Verifica cache para a conversa
+            cache_key = get_cache_key(prompt_conversa)
+            cached_response = get_cached_response(cache_key)
+            
+            if cached_response:
+                print("Usando resposta em cache para conversa")
+                resposta = cached_response
             else:
-                data_conversa = resp_conversa.json()
-                resposta = data_conversa.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
+                # Faz requisição à API com retry
+                sucesso, resposta = await make_api_request_with_retry(prompt_conversa)
+                
+                if sucesso:
+                    # Armazena no cache
+                    cache_response(cache_key, resposta)
+                else:
+                    resposta = resposta  # Já contém a mensagem de erro
 
         if not resposta:
-            return "⚠️ Nenhuma resposta gerada pela API Z.ai."
+            resposta = "⚠️ Nenhuma resposta gerada pela API Z.ai."
 
-        # Salva a resposta final e atualiza o contexto
-        salvar_mensagem(session_id, "assistant", resposta, 9)
-        novo_contexto = f"{contexto}\nUsuário: {nova_mensagem}\nAssistente: {resposta}".strip()
-        if len(novo_contexto) > 4000:
-            novo_contexto = novo_contexto[-4000:]
-        salvar_mensagem(session_id, "system", novo_contexto, 2)
+        # Salva a resposta da IA no histórico
+        salvar_mensagem(session_id, "assistant", resposta)
 
-        return resposta
+        # Retorna a resposta e as informações de depuração
+        return resposta, filtro_json if filtro_json else {}, sql_query, sql_params
 
     except Exception as e:
-        return f"💥 Erro interno no backend: {str(e)}"
+        return f"💥 Erro interno no backend: {str(e)}", {}, "", []
 
 # ------------------------------------------------------------
-# 5️⃣ FastAPI + CORS
+# 6️⃣ FastAPI + CORS
 # ------------------------------------------------------------
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -343,14 +495,19 @@ class Mensagem(BaseModel):
     session_id: str
 
 # ------------------------------------------------------------
-# 6️⃣ Rotas
+# 7️⃣ Rotas
 # ------------------------------------------------------------
 @app.get("/")
 async def home():
-    return {"status": "✅ API Z.ai ativa com busca de imóveis integrada."}
+    return {"status": "✅ API Z.ai ativa com busca de imóveis integrada e proteção contra rate limiting."}
 
 @app.post("/mensagem")
 async def mensagem(request: Request):
+    # Obtém o IP do cliente para rate limiting
+    client_ip = request.client.host
+    if "x-forwarded-for" in request.headers:
+        client_ip = request.headers["x-forwarded-for"].split(",")[0].strip()
+    
     data = await request.json()
     texto = data.get("texto", "").strip()
     session_id = data.get("session_id", "sessao")
@@ -358,15 +515,100 @@ async def mensagem(request: Request):
     if not texto:
         return {"resposta": "Por favor, envie uma mensagem válida."}
 
-    resposta = await atualizar_e_gerar_resposta(session_id, texto)
-    return {"resposta": resposta}
+    resposta, filtro_json, sql_query, sql_params = await atualizar_e_gerar_resposta(session_id, texto, client_ip)
+    
+    # Prepara a resposta padrão
+    response_data = {"resposta": resposta}
+    
+    # Se estiver em modo debug, inclui informações de depuração na resposta
+    if DEBUG_MODE:
+        debug_info = {
+            "filtro_json": filtro_json,
+            "mensagem_usuario": texto,
+            "timestamp": datetime.now().isoformat()
+        }
+        
+        # Adiciona informações da query SQL se houver busca
+        if sql_query:
+            debug_info.update({
+                "sql_query": sql_query,
+                "sql_params": sql_params,
+                "sql_para_executar": f"{sql_query}\n-- Parâmetros: {sql_params}"
+            })
+        
+        # Adiciona informações de depuração diretamente na resposta
+        response_data["debug"] = debug_info
+        
+        # Adiciona informações de depuração no topo da resposta para fácil visualização
+        if filtro_json:
+            response_data["resposta"] = f"[DEBUG] Filtro: {json.dumps(filtro_json, indent=2)}\n\n{resposta}"
+            if sql_query:
+                response_data["resposta"] = f"[DEBUG] SQL: {sql_query}\n[DEBUG] Parâmetros: {sql_params}\n\n{response_data['resposta']}"
+    
+    return JSONResponse(content=response_data)
 
-@app.get("/contexto/{session_id}")
-async def get_contexto(session_id: str):
-    return {"contexto": buscar_contexto(session_id)}
+@app.get("/historico/{session_id}")
+async def get_historico(session_id: str):
+    return {"historico": buscar_historico_conversa(session_id)}
+
+@app.get("/status")
+async def status():
+    """Endpoint para verificar o status do sistema e as estatísticas de cache"""
+    cache_size = len(RESPONSE_CACHE)
+    active_sessions = len(REQUESTS_TRACKER)
+    return {
+        "status": "online",
+        "cache_size": cache_size,
+        "active_sessions": active_sessions,
+        "max_requests_per_minute": MAX_REQUESTS_PER_MINUTE,
+        "debug_mode": DEBUG_MODE
+    }
+
+@app.post("/toggle-debug")
+async def toggle_debug():
+    """Endpoint para alternar o modo de depuração"""
+    global DEBUG_MODE
+    DEBUG_MODE = not DEBUG_MODE
+    return {"debug_mode": DEBUG_MODE}
+
+@app.get("/test-sql")
+async def test_sql_endpoint():
+    """
+    Endpoint de teste para verificar a funcionalidade SQL
+    Retorna um exemplo de query que pode ser executada no SQLite
+    """
+    exemplo_filtro = {
+        "tipo": "Apartamento",
+        "bairro": "Moema",
+        "valor_max": 800000,
+        "dormitorios_min": 2
+    }
+    
+    _, sql_query, sql_params = buscar_imoveis_robusto(exemplo_filtro)
+    
+    return {
+        "exemplo_filtro": exemplo_filtro,
+        "sql_query": sql_query,
+        "sql_params": sql_params,
+        "sql_para_executar": f"{sql_query}\n-- Parâmetros: {sql_params}"
+    }
+
+@app.get("/ola")
+async def ola_mundo():
+    """Endpoint de teste para verificar se o sistema está funcionando"""
+    debug_info = {
+        "mensagem": "Olá! Este é um teste para verificar se o sistema está funcionando corretamente.",
+        "timestamp": datetime.now().isoformat(),
+        "status": "success"
+    }
+    
+    return {
+        "mensagem": "Olá! Este é um teste para verificar se o sistema está funcionando corretamente.",
+        "debug": debug_info
+    }
 
 # ------------------------------------------------------------
-# 7️⃣ Ping Render Free
+# 8️⃣ Ping Render Free
 # ------------------------------------------------------------
 async def ping_randomico():
     if not RENDER_URL:
