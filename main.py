@@ -138,7 +138,7 @@ def buscar_imoveis_robusto(filtro_dicionario: dict) -> Tuple[list, str, List]:
     conn = sqlite3.connect(DB_IMOBILIARIA)
     cursor = conn.cursor()
 
-    sql = "SELECT codigo_interno FROM imoveis WHERE 1=1"
+    sql = "SELECT * FROM imoveis WHERE 1=1"
     params = []
 
     campos_numericos = ['area_terreno', 'area_util', 'banheiros', 'dormitorios', 'suites', 'vagas']
@@ -277,7 +277,7 @@ async def processar_mensagem(session_id: str, nova_mensagem: str, client_ip: str
         # 7. Se houver dados, IA formata
         mensagem_contexto = f"""
         Encontrei {len(resultados)} imóveis para o filtro: {filtro_json}.
-        Dados brutos: {resultados}
+        Dados Amigáveis: {resultados}
         Formate isso para o usuário de forma amigável, usando links https://www.openhouses.net.br/imovel/?ref=codigo_interno.
         """
         
