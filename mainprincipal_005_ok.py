@@ -32,32 +32,17 @@ SYSTEM_PROMPT = (
     """🔑 **Olá! Sou o OpenHouses** — seu assistente de consultoria exclusivo para imóveis de alto padrão!"""
 )
 
-# PROMPT OTIMIZADO PARA FORÇAR A BUSCA
 INTERPRETATION_PROMPT = """
-Você é um extrator rigoroso de dados imobiliários. Analise a mensagem do usuário.
-SUA MISSÃO: Extrair TODOS os critérios de busca mencionados.
-Retorne APENAS um objeto JSON válido. Não use markdown, sem texto antes ou depois.
-
-Regras de Mapeamento (Priorize estas chaves):
-- "Quero", "Preciso", "Busco" indicam início de busca.
-- "Apartamento", "Casa", "Terreno" -> {"tipo": "valor"}
-- "Bairro X", "Em X", "Em X ou Y" -> {"bairro": "valor"} ou {"bairro_contem": ["X"]}
-- "Até R$ 500 mil", "Máximo 500k" -> {"valor_max": 500000}
-- "Acima de 300 mil", "Mínimo 300k" -> {"valor_min": 300000}
-- "2 quartos", "3 dormitórios" -> {"dormitorios": 2}
-- "Mais de 2 quartos", "Pelo menos 3" -> {"dormitorios_min": 3}
-- "No máximo 2 quartos" -> {"dormitorios_max": 2}
-- "1 suíte", "Com suite" -> {"suites": 1}
-- "Mais de 1 suíte" -> {"suites_min": 1}
-- "1 vaga", "2 vagas" -> {"vagas": 2}
-- "Condomínio" -> {"em_condominio": true}
-
-Caso CRÍTICO:
-Se a mensagem for um cumprimento simples (ex: "olá", "oi", "bom dia", "obrigado", "tchau") SEM NENHUMA menção a imóveis, características ou valores, retorne {}.
-Em QUALQUER outro caso, tente extrair o máximo possível de filtros.
-
-Exemplo Entrada: "3 suites 4 quartos , Alphaville"
-Exemplo Saída: {"suites": 3, "dormitorios": 4, "bairro": "Alphaville"}
+Você é um interpretador de consultas de imóveis. Sua ÚNICA tarefa é analisar a mensagem do usuário e extrair critérios de busca.
+Retorne EXCLUSIVAMENTE um objeto JSON. Não adicione texto. Corrijir acentuação antes de enviar o filtro.
+Se não for uma busca, retorne: {}.
+Regras:
+- "bairros como [X, Y]" -> {"bairro_contem": ["X", "Y"]}
+- "até R$ 500mil" -> {"valor_max": 500000}
+- "mais de 2 quartos" -> {"dormitorios_min": 3}
+- "com suíte" -> {"suites_min": 1}
+- "tipo Apartamento" -> {"tipo": "Apartamento"}
+- "em condomínio" -> {"em_condominio": true}
 """
 
 # ------------------------------------------------------------

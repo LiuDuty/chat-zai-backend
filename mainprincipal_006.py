@@ -1,6 +1,6 @@
 # ============================================================
 #  SISTEMA SIMPLIFICADO DE BUSCA DE IMÓVEIS (Z.ai + FastAPI)
-#  CORRIGIDO: Retornos consistentes (5 valores)
+#  CORREÇÃO FORÇADA: Interpretação Agressiva na 1ª Interação
 # ============================================================
 
 from fastapi import FastAPI, Request
@@ -10,6 +10,8 @@ from pydantic import BaseModel
 import sqlite3, asyncio, random, httpx, json, time, hashlib
 from contextlib import asynccontextmanager
 from typing import Dict, Optional, Tuple, List
+
+from mainprincipal import ping_randomico
 
 # ------------------------------------------------------------
 # 1️⃣ Configurações
@@ -221,7 +223,6 @@ async def processar_mensagem(session_id: str, nova_mensagem: str, client_ip: str
         # 1. Rate Limit
         identifier = session_id if session_id else client_ip
         if not check_rate_limit(identifier):
-            # RETORNO CORRIGIDO: 5 valores
             return "Muitas solicitações. Aguarde um momento.", {}, "", "", []
 
         # 2. Interpretar Intenção (IA)
@@ -240,10 +241,16 @@ async def processar_mensagem(session_id: str, nova_mensagem: str, client_ip: str
         else:
             sucesso, resp_int = await make_api_request_with_retry(prompt_interpretacao)
             if sucesso:
-                try: 
-                    filtro_json = json.loads(resp_int)
-                    cache_response(cache_key, resp_int)
-                except: pass
+                # --- CORREÇÃO CRÍTICA: Limpeza de Markdown ---
+                try:
+                    # Remove ```json e ``` se a IA incluir
+                    clean_resp = resp_int.replace('```json', '').replace('```', '').strip()
+                    filtro_json = json.loads(clean_resp)
+                    cache_response(cache_key, resp_int) # Salva o bruto no cache, limpa no load
+                except json.JSONDecodeError as e:
+                    print(f"⚠️ ERRO JSON Parse: {e}")
+                    print(f"⚠️ Resposta Bruta da IA: {resp_int}")
+                    filtro_json = {}
 
         # 3. Exibir filtro no Console (CMD)
         print(f"\n{'='*50}")
@@ -260,18 +267,20 @@ async def processar_mensagem(session_id: str, nova_mensagem: str, client_ip: str
             ]
             sucesso, resposta = await make_api_request_with_retry(prompt_conversa)
             if not sucesso: resposta = "Erro ao gerar resposta."
-            
-            # RETORNO CORRIGIDO: 5 valores (resposta, filtro_vazio, sql_vazio, params_vazio, lista_vazia)
             return resposta, {}, "", "", []
 
         # 5. Modo Busca de Imóveis
         resultados, sql_query, sql_params = buscar_imoveis_robusto(filtro_json)
         
+        # LOG DA QUERY SQL NO CMD
+        print(f"🔍 [CMD] Query SQL Gerada:")
+        print(f"{sql_query}")
+        print(f"🔍 [CMD] Parâmetros: {sql_params}")
+        print(f"{'='*50}\n")
+
         # 6. Verificação se há dados
         if not resultados:
-            # Resposta direta sem IA
             resposta_direta = "não temos informacões no momento, consulte diretamente no site"
-            # RETORNO CORRIGIDO: 5 valores (resposta, filtro, sql, params, lista_vazia)
             return resposta_direta, filtro_json, sql_query, sql_params, []
         
         # 7. Se houver dados, IA formata
@@ -295,7 +304,6 @@ async def processar_mensagem(session_id: str, nova_mensagem: str, client_ip: str
 
     except Exception as e:
         print(f"💥 Erro: {e}")
-        # RETORNO CORRIGIDO: 5 valores
         return f"Erro interno: {str(e)}", {}, "", "", []
 
 # ------------------------------------------------------------
@@ -318,47 +326,3 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-class Mensagem(BaseModel):
-    texto: str
-    session_id: str
-
-@app.post("/mensagem")
-async def mensagem(request: Request):
-    client_ip = request.client.host
-    data = await request.json()
-    texto = data.get("texto", "").strip()
-    session_id = data.get("session_id", "default")
-
-    if not texto:
-        return {"resposta": "Envie uma mensagem válida."}
-
-    # Desempacota corretamente os 5 valores
-    resposta, filtro, sql, params, resultados = await processar_mensagem(session_id, texto, client_ip)
-    
-    response_data = {"resposta": resposta}
-    
-    if DEBUG_MODE:
-        debug_info = {
-            "filtro": filtro,
-            "sql": sql,
-            "params": params,
-            "qtd_resultados": len(resultados) if resultados else 0
-        }
-        response_data["debug"] = debug_info
-        
-    return JSONResponse(content=response_data)
-
-@app.get("/status")
-async def status():
-    return {"status": "online", "mode": "simplified_no_db_history"}
-
-async def ping_randomico():
-    if not RENDER_URL: return
-    while True:
-        try:
-            async with httpx.AsyncClient() as client:
-                await client.get(RENDER_URL)
-                print("🔁 Ping keep-alive enviado.")
-        except: pass
-        await asyncio.sleep(random.randint(300, 600))
