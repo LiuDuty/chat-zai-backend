@@ -270,7 +270,7 @@ async def processar_mensagem(session_id: str, nova_mensagem: str, client_ip: str
         # 6. Verificação se há dados
         if not resultados:
             # Resposta direta sem IA
-            resposta_direta = "não temos informacões no momento, consulte diretamente no site"
+            resposta_direta = "não temos informacões no momento, consulte diretamente no site, filtro informado: " + str(filtro_json)
             # RETORNO CORRIGIDO: 5 valores (resposta, filtro, sql, params, lista_vazia)
             return resposta_direta, filtro_json, sql_query, sql_params, []
         
