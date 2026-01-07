@@ -1,6 +1,6 @@
 # ============================================================
 #  SISTEMA SIMPLIFICADO DE BUSCA DE IMÓVEIS (Z.ai + FastAPI)
-#  VERSÃO CORRIGIDA: Logs detalhados + payload ajustado à API
+#  CORRIGIDO: Retornos consistentes (5 valores)
 # ============================================================
 
 from fastapi import FastAPI, Request
@@ -32,7 +32,7 @@ SYSTEM_PROMPT = (
     """🔑 **Olá! Sou o OpenHouses** — seu assistente de consultoria exclusivo para imóveis de alto padrão!"""
 )
 
-# PROMPT OTIMIZADO PARA FORÇAR A BUSCA (JSON MODE)
+# PROMPT OTIMIZADO PARA FORÇAR A BUSCA
 INTERPRETATION_PROMPT = """
 Você é um extrator rigoroso de dados imobiliários. Analise a mensagem do usuário.
 SUA MISSÃO: Extrair TODOS os critérios de busca mencionados.
@@ -90,121 +90,46 @@ def get_cached_response(cache_key: str) -> Optional[str]:
 def cache_response(cache_key: str, response: str):
     RESPONSE_CACHE[cache_key] = (time.time(), response)
 
-# CORRIGIDO: Logs detalhados + payload ajustado à doc da Z.ai
-async def make_api_request_with_retry(
-    messages: list,
-    max_retries: int = 2,
-    use_json_mode: bool = False,
-) -> Tuple[bool, str]:
-    headers = {
-        "Authorization": f"Bearer {API_KEY}",
-        "Content-Type": "application/json",
-    }
-
+async def make_api_request_with_retry(messages: list, max_retries=3) -> Tuple[bool, str]:
+    headers = {"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json"}
+    
     if not messages or not isinstance(messages, list):
         return False, "Erro interno: formato inválido"
 
     for attempt in range(max_retries):
         if attempt > 0:
-            wait_time = 0.5 * attempt  # retry leve
+            wait_time = 2 ** attempt + random.uniform(0, 1)
             print(f"⏳ Retry {attempt + 1}/{max_retries}. Aguardando {wait_time:.2f}s...")
             await asyncio.sleep(wait_time)
-
+        
         try:
-            timeout_config = httpx.Timeout(20.0, connect=10.0)
-            payload = {
-                "model": "glm-4.5-flash",
-                "messages": messages,
-                "max_tokens": 512,
-                "temperature": 0.2,
-                "stream": False,
-                "response_format": {"type": "json_object"} if use_json_mode else {"type": "text"},
-            }
-
-            print(f"📤 Enviando para Z.ai (tentativa {attempt + 1})...")
+            timeout_config = httpx.Timeout(60.0)
             async with httpx.AsyncClient(timeout=timeout_config) as client:
-                response = await client.post(API_URL, json=payload, headers=headers)
-
-            print(f"📥 Status Code: {response.status_code}")
-            print(f"📥 Corpo da resposta (raw): {response.text[:2000]}")
-
+                response = await client.post(
+                    API_URL, 
+                    json={"model": "glm-4.5-flash", "messages": messages}, 
+                    headers=headers
+                )
+            
             if response.status_code == 200:
                 data = response.json()
-                choices = data.get("choices", [])
-                if choices and isinstance(choices, list) and len(choices) > 0:
-                    content = choices[0].get("message", {}).get("content", "").strip()
-                    return True, content
-                else:
-                    print("❌ Resposta 200, mas 'choices' veio vazia ou em formato inesperado.")
-                    return False, "Resposta da API sem conteúdo (choices vazio)."
-            elif response.status_code == 401:
-                print("❌ 401 Unauthorized: possível problema com API_KEY.")
-                return False, "Erro de autenticação na API."
+                content = data.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
+                return True, content
             elif response.status_code == 429:
-                print("❌ 429 Rate Limit / Muitas requisições.")
+                print(f"❌ Rate Limit (429): {response.text}")
                 if attempt == max_retries - 1:
-                    return False, "Muitas solicitações. Tente novamente em alguns instantes."
-                await asyncio.sleep(2)
+                    return False, "Muitas solicitações. Tente em minutos."
             else:
-                print(f"❌ Erro não tratado: {response.status_code} | {response.text}")
+                print(f"❌ Erro API: {response.text}")
                 if attempt == max_retries - 1:
-                    return False, f"Erro na API: {response.status_code} {response.text[:500]}"
-
-        except httpx.TimeoutException as e:
-            print(f"⏱️ Timeout ao chamar a API Z.ai: {e}")
-            if attempt == max_retries - 1:
-                return False, "O serviço demorou muito para responder (timeout)."
+                    return False, f"Erro na API: {response.text}"
+        
         except Exception as e:
-            print(f"❌ Exceção ao chamar API Z.ai: {e}")
+            print(f"❌ Exceção: {str(e)}")
             if attempt == max_retries - 1:
                 return False, f"Erro de conexão: {str(e)}"
-
-    return False, "Falha ao obter resposta da API."
-
-# NOVA FUNÇÃO: Formatação Instantânea em Python
-def formatar_resposta_python(resultados: list, filtro: dict) -> str:
-    if not resultados:
-        return (
-            f"❌ **Não encontrei imóveis** exatos para o filtro: `{filtro}`.\n\n"
-            f"💡 *Tente relaxar alguns critérios "
-            f"(ex: aumentar a faixa de preço ou remover o bairro específico).*"
-        )
-
-    total = len(resultados)
-
-    intro = f"🏠 **Encontrei {total} imóveis** perfeitos para você!"
-    if 'bairro' in filtro:
-        intro += f" No bairro {filtro['bairro']}."
-    intro += "\n\n"
-
-    texto = intro
-    resultados_para_mostrar = resultados[:5]
-
-    for imovel in resultados_para_mostrar:
-        # AQUI: ajuste os índices conforme a ordem das colunas na sua tabela 'imoveis'
-        # Exemplo genérico:
-        # imovel[0] -> id/codigo
-        # imovel[1] -> tipo
-        # imovel[2] -> bairro
-        # imovel[3] -> valor
-        try:
-            codigo = imovel[0]
-            tipo = imovel[1] if len(imovel) > 1 else "Imóvel"
-            bairro = imovel[2] if len(imovel) > 2 else "Localização"
-            valor = imovel[3] if len(imovel) > 3 else "Consulte"
-
-            link = f"https://www.openhouses.net.br/imovel/?ref={codigo}"
-
-            texto += f"🔹 **{tipo}** em {bairro}\n"
-            texto += f"💰 Valor: {valor}\n"
-            texto += f"🔗 [Ver detalhes]({link})\n\n"
-        except IndexError:
-            continue
-
-    if total > 5:
-        texto += f"_👉 E mais {total - 5} opções disponíveis. Refine sua busca para ver detalhes específicos._"
-
-    return texto
+    
+    return False, "Falha ao obter resposta."
 
 # ------------------------------------------------------------
 # 3️⃣ Lógica de busca de imóveis
@@ -220,6 +145,7 @@ def buscar_imoveis_robusto(filtro_dicionario: dict) -> Tuple[list, str, List]:
     campos_monetarios = ['valor', 'iptu', 'valor_condominio']
 
     for campo, valor in filtro_dicionario.items():
+        
         # Mínimo
         if campo.endswith('_min'):
             coluna = campo.replace('_min', '')
@@ -230,12 +156,11 @@ def buscar_imoveis_robusto(filtro_dicionario: dict) -> Tuple[list, str, List]:
                     sql_col = f"CAST(REPLACE(REPLACE(REPLACE({coluna}, 'R$', ''), '.', ''), ',', '.') AS REAL)"
                     sql += f" AND {sql_col} >= ?"
                     params.append(val_float)
-                except ValueError:
-                    pass
+                except ValueError: pass
             elif coluna in campos_numericos:
                 sql += f" AND CAST({coluna} AS REAL) >= ?"
                 params.append(valor)
-
+        
         # Máximo
         elif campo.endswith('_max'):
             coluna = campo.replace('_max', '')
@@ -246,8 +171,7 @@ def buscar_imoveis_robusto(filtro_dicionario: dict) -> Tuple[list, str, List]:
                     sql_col = f"CAST(REPLACE(REPLACE(REPLACE({coluna}, 'R$', ''), '.', ''), ',', '.') AS REAL)"
                     sql += f" AND {sql_col} <= ?"
                     params.append(val_float)
-                except ValueError:
-                    pass
+                except ValueError: pass
             elif coluna in campos_numericos:
                 sql += f" AND CAST({coluna} AS REAL) <= ?"
                 params.append(valor)
@@ -262,13 +186,13 @@ def buscar_imoveis_robusto(filtro_dicionario: dict) -> Tuple[list, str, List]:
             else:
                 sql += f" AND {coluna} LIKE ?"
                 params.append(f"%{valor}%")
-
+                
         # Lista (IN)
         elif isinstance(valor, list):
             placeholders = ', '.join(['?'] * len(valor))
             sql += f" AND {campo} IN ({placeholders})"
             params.extend(valor)
-
+            
         # Booleano
         elif isinstance(valor, bool):
             if valor:
@@ -277,87 +201,101 @@ def buscar_imoveis_robusto(filtro_dicionario: dict) -> Tuple[list, str, List]:
             else:
                 sql += f" AND ({campo} != ? OR {campo} IS NULL)"
                 params.append("Sim")
-
+                
         # Igualdade exata
-        else:
+        else: 
             sql += f" AND {campo} = ?"
             params.append(valor)
 
     cursor.execute(sql, params)
     resultados = cursor.fetchall()
     conn.close()
-
+    
     return resultados, sql, params
 
 # ------------------------------------------------------------
-# 4️⃣ Lógica Principal OTIMIZADA
+# 4️⃣ Lógica Principal Corrigida
 # ------------------------------------------------------------
 async def processar_mensagem(session_id: str, nova_mensagem: str, client_ip: str = None):
     try:
+        # 1. Rate Limit
         identifier = session_id if session_id else client_ip
         if not check_rate_limit(identifier):
+            # RETORNO CORRIGIDO: 5 valores
             return "Muitas solicitações. Aguarde um momento.", {}, "", "", []
 
-        # 2. Interpretar intenção com JSON mode
+        # 2. Interpretar Intenção (IA)
         prompt_interpretacao = [
             {"role": "system", "content": INTERPRETATION_PROMPT},
             {"role": "user", "content": nova_mensagem},
         ]
-
+        
         cache_key = get_cache_key(prompt_interpretacao)
         cached_interpretation = get_cached_response(cache_key)
-
+        
         filtro_json = {}
         if cached_interpretation:
-            try:
-                filtro_json = json.loads(cached_interpretation)
-            except Exception:
-                pass
+            try: filtro_json = json.loads(cached_interpretation)
+            except: pass
         else:
-            sucesso, resp_int = await make_api_request_with_retry(
-                prompt_interpretacao,
-                use_json_mode=True,
-            )
+            sucesso, resp_int = await make_api_request_with_retry(prompt_interpretacao)
             if sucesso:
-                try:
+                try: 
                     filtro_json = json.loads(resp_int)
                     cache_response(cache_key, resp_int)
-                except Exception as e:
-                    print(f"⚠️ Erro ao fazer parse do JSON da interpretação: {e}")
-                    filtro_json = {}
-            else:
-                print(f"⚠️ Falha na interpretação: {resp_int}")
+                except: pass
 
-        if DEBUG_MODE:
-            print(f"\n{'=' * 50}")
-            print(f"🔍 [CMD] Usuário: {nova_mensagem}")
-            print(f"🔍 [CMD] Filtro Interpretado: {filtro_json}")
-            print(f"{'=' * 50}\n")
+        # 3. Exibir filtro no Console (CMD)
+        print(f"\n{'='*50}")
+        print(f"🔍 [CMD] Usuário: {nova_mensagem}")
+        print(f"🔍 [CMD] Filtro Interpretado: {filtro_json}")
+        print(f"{'='*50}\n")
 
+        # 4. Decisão: É uma busca ou conversa?
         if not filtro_json:
-            # Modo conversa: chamar modelo em modo texto
+            # Modo Conversa Padrão
             prompt_conversa = [
                 {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": nova_mensagem},
+                {"role": "user", "content": nova_mensagem}
             ]
-            sucesso, resposta = await make_api_request_with_retry(
-                prompt_conversa,
-                use_json_mode=False,
-            )
-            if not sucesso:
-                resposta = "Erro ao gerar resposta."
-                print(f"❌ Erro no modo conversa: {resposta}")
-
+            sucesso, resposta = await make_api_request_with_retry(prompt_conversa)
+            if not sucesso: resposta = "Erro ao gerar resposta."
+            
+            # RETORNO CORRIGIDO: 5 valores (resposta, filtro_vazio, sql_vazio, params_vazio, lista_vazia)
             return resposta, {}, "", "", []
 
-        # Modo busca de imóveis
+        # 5. Modo Busca de Imóveis
         resultados, sql_query, sql_params = buscar_imoveis_robusto(filtro_json)
-        resposta_formatada = formatar_resposta_python(resultados, filtro_json)
-
-        return resposta_formatada, filtro_json, sql_query, sql_params, resultados
+        
+        # 6. Verificação se há dados
+        if not resultados:
+            # Resposta direta sem IA
+            resposta_direta = "não temos informacões no momento, consulte diretamente no site, filtro informado: " + str(filtro_json)
+            # RETORNO CORRIGIDO: 5 valores (resposta, filtro, sql, params, lista_vazia)
+            return resposta_direta, filtro_json, sql_query, sql_params, []
+        
+        # 7. Se houver dados, IA formata
+        mensagem_contexto = f"""
+        Encontrei {len(resultados)} imóveis para o filtro: {filtro_json}.
+        Dados Amigáveis: {resultados}
+        Formate isso para o usuário de forma amigável, usando links https://www.openhouses.net.br/imovel/?ref=codigo_interno.
+        """
+        
+        prompt_formatar = [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": nova_mensagem},
+            {"role": "assistant", "content": mensagem_contexto}
+        ]
+        
+        sucesso, resposta_formatada = await make_api_request_with_retry(prompt_formatar)
+        if sucesso:
+            return resposta_formatada, filtro_json, sql_query, sql_params, resultados
+        else:
+            return "Erro ao formatar resultados.", filtro_json, sql_query, sql_params, []
 
     except Exception as e:
-        print(f"💥 Erro em processar_mensagem: {e}")
+        print(f"💥 Erro: {e}")
+        # RETORNO CORRIGIDO: 5 valores
         return f"Erro interno: {str(e)}", {}, "", "", []
 
 # ------------------------------------------------------------
@@ -395,10 +333,11 @@ async def mensagem(request: Request):
     if not texto:
         return {"resposta": "Envie uma mensagem válida."}
 
+    # Desempacota corretamente os 5 valores
     resposta, filtro, sql, params, resultados = await processar_mensagem(session_id, texto, client_ip)
-
+    
     response_data = {"resposta": resposta}
-
+    
     if DEBUG_MODE:
         debug_info = {
             "filtro": filtro,
@@ -407,21 +346,19 @@ async def mensagem(request: Request):
             "qtd_resultados": len(resultados) if resultados else 0
         }
         response_data["debug"] = debug_info
-
+        
     return JSONResponse(content=response_data)
 
 @app.get("/status")
 async def status():
-    return {"status": "online", "mode": "simplified_no_db_history_v2"}
+    return {"status": "online", "mode": "simplified_no_db_history"}
 
 async def ping_randomico():
-    if not RENDER_URL:
-        return
+    if not RENDER_URL: return
     while True:
         try:
             async with httpx.AsyncClient() as client:
                 await client.get(RENDER_URL)
                 print("🔁 Ping keep-alive enviado.")
-        except Exception:
-            pass
+        except: pass
         await asyncio.sleep(random.randint(300, 600))
