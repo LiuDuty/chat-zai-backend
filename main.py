@@ -188,10 +188,10 @@ def formatar_resposta_python(resultados: list, filtro: dict) -> str:
         # imovel[2] -> bairro
         # imovel[3] -> valor
         try:
-            codigo = imovel[0]
-            tipo = imovel[1] if len(imovel) > 1 else "Imóvel"
+            codigo = imovel[6]
+            tipo = imovel[16] if len(imovel) > 16 else "Imóvel"
             bairro = imovel[2] if len(imovel) > 2 else "Localização"
-            valor = imovel[3] if len(imovel) > 3 else "Consulte"
+            valor = imovel[19] if len(imovel) > 19 else "Consulte"
 
             link = f"https://www.openhouses.net.br/imovel/?ref={codigo}"
 
